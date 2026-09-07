@@ -1,4 +1,6 @@
-/* вишлист — маленькое приложение на двоих, всё хранится в localStorage */
+/* вишлист — списки на двоих.
+   без настроек firebase всё хранится в localStorage этого браузера,
+   с настройками — синхронизируется между устройствами через firestore. */
 (function () {
   'use strict';
 
@@ -7,12 +9,15 @@
     nika:   { name: 'ника',   key: 'wishlist.v1.nika' }
   };
 
-  var PHOTO_SIZE = 640;      // сторона квадрата, в пикселях
-  var PHOTO_QUALITY = 0.82;
+  var PHOTO_SIZE = 512;      // сторона квадрата, в пикселях
+  var PHOTO_QUALITY = 0.78;
+  var FIREBASE_VERSION = '12.18.0';
 
   var current = 'nikita';
-  var editingId = null;      // id виша, который сейчас редактируем
-  var pendingPhoto = null;   // фото в открытом попапе (data url) либо null
+  var state = { nikita: [], nika: [] };   // текущие списки в памяти
+  var cloud = null;                       // подключение к firestore либо null
+  var editingId = null;                   // id виша, который сейчас редактируем
+  var pendingPhoto = null;                // фото в открытом попапе (data url) либо null
   var deletingId = null;
   var lastFocused = null;
 
@@ -25,9 +30,9 @@
   var drop = $('drop'), removePhotoBtn = $('remove-photo'), errorBox = $('error');
   var sheetTitle = $('wish-title'), toast = $('toast');
 
-  /* ---------- хранилище ---------- */
+  /* ---------- локальное хранилище ---------- */
 
-  function load(person) {
+  function readLocal(person) {
     try {
       var raw = localStorage.getItem(PEOPLE[person].key);
       var list = raw ? JSON.parse(raw) : [];
@@ -37,7 +42,7 @@
     }
   }
 
-  function save(person, list) {
+  function writeLocal(person, list) {
     try {
       localStorage.setItem(PEOPLE[person].key, JSON.stringify(list));
       return true;
@@ -49,6 +54,118 @@
 
   function makeId() {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  }
+
+  function byNewest(a, b) {
+    return (b.createdAt || 0) - (a.createdAt || 0);
+  }
+
+  function setList(person, list) {
+    state[person] = list.slice().sort(byNewest);
+    writeLocal(person, state[person]);
+    if (person === current) render();
+  }
+
+  /* ---------- синхронизация через firestore ---------- */
+
+  function cloudSettings() {
+    var c = window.firebaseConfig;
+    return (c && c.apiKey && c.projectId) ? c : null;
+  }
+
+  function connectCloud() {
+    var settings = cloudSettings();
+    if (!settings) return Promise.resolve(null);
+
+    var base = 'https://www.gstatic.com/firebasejs/' + FIREBASE_VERSION + '/';
+
+    return Promise.all([
+      import(base + 'firebase-app.js'),
+      import(base + 'firebase-firestore.js')
+    ]).then(function (parts) {
+      var app = parts[0].initializeApp(settings);
+      var fs = parts[1];
+      var db = fs.getFirestore(app);
+
+      function wishDoc(person, id) { return fs.doc(db, 'lists', person, 'wishes', id); }
+
+      return {
+        put: function (person, wish) { return fs.setDoc(wishDoc(person, wish.id), wish); },
+        drop: function (person, id) { return fs.deleteDoc(wishDoc(person, id)); },
+        watch: function (person, onList, onFail) {
+          var wishes = fs.query(
+            fs.collection(db, 'lists', person, 'wishes'),
+            fs.orderBy('createdAt', 'desc')
+          );
+          return fs.onSnapshot(wishes, function (snap) {
+            onList(snap.docs.map(function (d) { return d.data(); }));
+          }, onFail);
+        }
+      };
+    }).catch(function () {
+      return null;   // нет сети или неверные настройки — остаёмся на локальном хранилище
+    });
+  }
+
+  // виши, пришедшие из облака, помечаем cloud: true — это только локальная пометка.
+  // всё, что такой пометки не имеет, ещё не доехало до firestore и живёт до подтверждения.
+  function forCloud(wish) {
+    var copy = {};
+    Object.keys(wish).forEach(function (k) { if (k !== 'cloud') copy[k] = wish[k]; });
+    return copy;
+  }
+
+  var firstSnapshot = { nikita: true, nika: true };
+
+  function applySnapshot(person, list) {
+    var known = {};
+    list.forEach(function (w) { known[w.id] = true; w.cloud = true; });
+
+    // то, что создано без сети или до подключения облака
+    var unsynced = state[person].filter(function (w) { return !w.cloud && !known[w.id]; });
+
+    if (firstSnapshot[person]) {
+      firstSnapshot[person] = false;
+      unsynced.forEach(function (w) { cloud.put(person, forCloud(w)).catch(function () {}); });
+    }
+
+    setList(person, list.concat(unsynced));
+  }
+
+  function startSync() {
+    Object.keys(PEOPLE).forEach(function (person) {
+      cloud.watch(person, function (list) {
+        applySnapshot(person, list);
+      }, function () {
+        showToast('не получилось связаться с облаком — виши остались на этом устройстве');
+      });
+    });
+  }
+
+  /* ---------- операции над вишами ---------- */
+
+  function saveWish(person, wish) {
+    var list = state[person].filter(function (w) { return w.id !== wish.id; });
+    list.push(wish);
+    setList(person, list);
+    if (cloud) {
+      cloud.put(person, forCloud(wish)).catch(function () {
+        showToast('виш сохранён на этом устройстве, но не улетел в облако');
+      });
+    }
+  }
+
+  function deleteWish(person, id) {
+    setList(person, state[person].filter(function (w) { return w.id !== id; }));
+    if (cloud) {
+      cloud.drop(person, id).catch(function () {
+        showToast('виш удалён здесь, но в облаке остался');
+      });
+    }
+  }
+
+  function findWish(person, id) {
+    return state[person].filter(function (w) { return w.id === id; })[0] || null;
   }
 
   /* ---------- отрисовка ---------- */
@@ -63,7 +180,7 @@
   }
 
   function render() {
-    var list = load(current);
+    var list = state[current];
 
     grid.innerHTML = '';
     counter.textContent = list.length
@@ -174,10 +291,7 @@
     editingId = id || null;
     errorBox.hidden = true;
 
-    var wish = null;
-    if (id) {
-      wish = load(current).filter(function (w) { return w.id === id; })[0] || null;
-    }
+    var wish = id ? findWish(current, id) : null;
 
     sheetTitle.textContent = wish ? 'редактировать виш' : 'новый виш';
     titleInput.value = wish ? wish.title : '';
@@ -280,20 +394,16 @@
       return;
     }
 
-    var list = load(current);
-
-    if (editingId) {
-      list = list.map(function (w) {
-        return w.id === editingId ? { id: w.id, title: title, link: link, photo: pendingPhoto, createdAt: w.createdAt } : w;
-      });
-    } else {
-      list.unshift({ id: makeId(), title: title, link: link, photo: pendingPhoto, createdAt: Date.now() });
-    }
-
-    if (!save(current, list)) return;
+    var old = editingId ? findWish(current, editingId) : null;
+    saveWish(current, {
+      id: old ? old.id : makeId(),
+      title: title,
+      link: link,
+      photo: pendingPhoto,
+      createdAt: old ? (old.createdAt || Date.now()) : Date.now()
+    });
 
     closeOverlay(wishOverlay);
-    render();
     showToast(editingId ? 'виш обновлён ✨' : 'виш добавлен ✨');
     editingId = null;
   });
@@ -302,18 +412,16 @@
 
   function askDelete(id) {
     deletingId = id;
-    var wish = load(current).filter(function (w) { return w.id === id; })[0];
+    var wish = findWish(current, id);
     $('confirm-text').textContent = wish ? '«' + wish.title + '» нельзя будет вернуть' : 'его нельзя будет вернуть';
     openOverlay(confirmOverlay);
     setTimeout(function () { $('confirm-no').focus(); }, 60);
   }
 
   $('confirm-yes').addEventListener('click', function () {
-    var list = load(current).filter(function (w) { return w.id !== deletingId; });
-    save(current, list);
+    deleteWish(current, deletingId);
     deletingId = null;
     closeOverlay(confirmOverlay);
-    render();
     showToast('виш удалён');
   });
 
@@ -324,7 +432,7 @@
     toast.textContent = text;
     toast.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { toast.hidden = true; }, 2200);
+    toastTimer = setTimeout(function () { toast.hidden = true; }, 2600);
   }
 
   /* ---------- события ---------- */
@@ -422,6 +530,10 @@
 
   /* ---------- старт ---------- */
 
+  Object.keys(PEOPLE).forEach(function (person) {
+    state[person] = readLocal(person).sort(byNewest);
+  });
+
   var savedTab;
   try { savedTab = localStorage.getItem('wishlist.v1.tab'); } catch (e) {}
   if (savedTab && PEOPLE[savedTab] && savedTab !== current) {
@@ -429,6 +541,12 @@
   } else {
     render();
   }
+
+  connectCloud().then(function (api) {
+    if (!api) return;
+    cloud = api;
+    startSync();
+  });
 
   if (!window.matchMedia || !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     scheduleCritter(true);
