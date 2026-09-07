@@ -29,8 +29,11 @@ python3 -m http.server 8000
 
 ## публикация
 
-**github pages:** в настройках репозитория `settings → pages → source` выбери `github actions`.
-воркфлоу `.github/workflows/pages.yml` соберёт и опубликует сайт при пуше.
+**github pages:** нужен один ручной шаг — в настройках репозитория
+`settings → pages → source` выбери `github actions` (сам воркфлоу включить pages не может,
+у токена нет таких прав). после этого запусти воркфлоу `deploy to github pages`
+на вкладке `actions` или просто сделай пуш — сайт опубликуется на
+`https://kanon402.github.io/wish/`.
 
 **netlify:** подключи репозиторий, каталог публикации — корень (`.`), команда сборки не нужна
 (это уже прописано в `netlify.toml`). можно и просто перетащить папку в netlify drop.

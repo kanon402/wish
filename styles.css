@@ -7,7 +7,8 @@
   --font: "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-/* никита — тёмно-зелёный */
+/* никита — тёмно-зелёный (он же тема по умолчанию) */
+:root,
 html[data-theme="nikita"]{
   --bg: #0e2318;
   --bg-2: #143020;
