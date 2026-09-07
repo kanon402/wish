@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru" data-theme="nikita">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#12281c">
+<meta name="description" content="уютный вишлист на двоих">
+<title>вишлист</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%80%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="blob blob-1" aria-hidden="true"></div>
+<div class="blob blob-2" aria-hidden="true"></div>
+
+<header class="top">
+  <h1 class="logo">вишлист</h1>
+  <p class="sub">маленькие мечты в одном месте</p>
+
+  <div class="tabs" role="tablist" aria-label="выбор списка">
+    <button class="tab is-active" role="tab" id="tab-nikita" aria-selected="true" aria-controls="panel" data-person="nikita">
+      <span class="tab-dot"></span>никита
+    </button>
+    <button class="tab" role="tab" id="tab-nika" aria-selected="false" aria-controls="panel" data-person="nika">
+      <span class="tab-dot"></span>ника
+    </button>
+  </div>
+</header>
+
+<main id="panel" role="tabpanel" aria-labelledby="tab-nikita">
+  <div class="bar">
+    <p class="counter" id="counter">вишей пока нет</p>
+    <button class="btn btn-primary" id="add-btn">＋ добавить виш</button>
+  </div>
+
+  <p class="empty" id="empty" hidden>тут пока пусто — добавь первый виш ✨</p>
+
+  <ul class="grid" id="grid"></ul>
+</main>
+
+<footer class="foot">сделано с любовью 🤍 всё хранится только в этом браузере</footer>
+
+<!-- попап виша -->
+<div class="overlay" id="wish-overlay" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="wish-title">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <h2 class="sheet-title" id="wish-title">новый виш</h2>
+
+    <form id="wish-form" novalidate>
+      <label class="drop" id="drop" for="photo">
+        <input type="file" id="photo" accept="image/*" hidden>
+        <img class="drop-img" id="preview" alt="" hidden>
+        <span class="drop-hint" id="drop-hint">
+          <span class="drop-emoji">🖼️</span>
+          <span>нажми, чтобы выбрать фото</span>
+          <small>любая картинка — обрежем в квадрат</small>
+        </span>
+      </label>
+      <button type="button" class="btn btn-ghost btn-sm" id="remove-photo" hidden>убрать фото</button>
+
+      <label class="field">
+        <span class="field-label">название</span>
+        <input type="text" id="title" maxlength="80" placeholder="например: тёплый плед" autocomplete="off">
+      </label>
+
+      <label class="field">
+        <span class="field-label">ссылка на покупку <em>по желанию</em></span>
+        <input type="url" id="link" inputmode="url" placeholder="https://..." autocomplete="off" spellcheck="false">
+      </label>
+
+      <p class="error" id="error" hidden></p>
+
+      <div class="sheet-actions">
+        <button type="button" class="btn btn-ghost" id="cancel-btn">отмена</button>
+        <button type="submit" class="btn btn-primary" id="save-btn">сохранить</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- попап удаления -->
+<div class="overlay" id="confirm-overlay" hidden>
+  <div class="sheet sheet-tiny" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h2 class="sheet-title" id="confirm-title">удалить виш?</h2>
+    <p class="confirm-text" id="confirm-text">его нельзя будет вернуть</p>
+    <div class="sheet-actions">
+      <button type="button" class="btn btn-ghost" id="confirm-no">отмена</button>
+      <button type="button" class="btn btn-danger" id="confirm-yes">удалить</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
