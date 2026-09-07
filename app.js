@@ -18,7 +18,7 @@
 
   var $ = function (id) { return document.getElementById(id); };
 
-  var grid = $('grid'), empty = $('empty'), counter = $('counter');
+  var grid = $('grid'), counter = $('counter');
   var wishOverlay = $('wish-overlay'), confirmOverlay = $('confirm-overlay');
   var form = $('wish-form'), titleInput = $('title'), linkInput = $('link');
   var photoInput = $('photo'), preview = $('preview'), dropHint = $('drop-hint');
@@ -66,7 +66,6 @@
     var list = load(current);
 
     grid.innerHTML = '';
-    empty.hidden = list.length > 0;
     counter.textContent = list.length
       ? 'в списке ' + list.length + ' ' + plural(list.length)
       : 'вишей пока нет';
