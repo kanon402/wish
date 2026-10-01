@@ -31,6 +31,8 @@
   #status.ok { color:var(--ok); }
   .hidden { display:none; }
   small a { color:var(--accent); }
+  body.drag main { outline:2px dashed var(--accent); outline-offset:-8px; }
+  .fname { font-weight:600; word-break:break-all; margin-top:6px; }
 </style>
 </head>
 <body>
@@ -52,6 +54,8 @@
       <div class="row">
         <button id="send">Отправить</button>
         <button class="ghost" id="paste">Из буфера</button>
+        <button class="ghost" id="attach">📎 Файлы</button>
+        <input type="file" id="file" multiple hidden>
         <span id="status" class="grow"></span>
       </div>
     </div>
@@ -62,6 +66,7 @@
 <script>
 const API = 'https://api.github.com';
 const DESC = 'pastebin-data';
+const FDESC = 'pastebin-files';
 const $ = id => document.getElementById(id);
 const store = {
   get: k => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -70,6 +75,8 @@ const store = {
 };
 let token = store.get('pb_token');
 let gistId = store.get('pb_gist');
+let filesId = store.get('pb_files');
+const MAX_FILE = 10 * 1024 * 1024; // лимит Gist API на запрос, с запасом под base64
 let lastSig = '';
 
 // быстрый вход через #token=...
@@ -89,33 +96,73 @@ async function gh(path, opts = {}) {
 }
 
 async function ensureGist() {
-  if (gistId) return;
-  for (let page = 1; page <= 5 && !gistId; page++) {
+  if (gistId && filesId) return;
+  const found = {};
+  for (let page = 1; page <= 5 && !(found[DESC] && found[FDESC]); page++) {
     const list = await gh(`/gists?per_page=100&page=${page}`);
     if (!list.length) break;
-    const f = list.find(g => g.description === DESC);
-    if (f) gistId = f.id;
+    for (const g of list) if ((g.description === DESC || g.description === FDESC) && !found[g.description]) found[g.description] = g.id;
   }
-  if (!gistId) {
-    const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: DESC, public: false, files: { 'README.md': { content: 'pastebin storage' } } }) });
-    gistId = g.id;
-  }
-  store.set('pb_gist', gistId);
+  const make = async d => (await gh('/gists', { method: 'POST', body: JSON.stringify({ description: d, public: false, files: { 'README.md': { content: d } } }) })).id;
+  gistId = found[DESC] || await make(DESC);
+  filesId = found[FDESC] || await make(FDESC);
+  store.set('pb_gist', gistId); store.set('pb_files', filesId);
 }
 
 async function load() {
   try {
     await ensureGist();
     const g = await gh('/gists/' + gistId);
-    const items = await Promise.all(Object.values(g.files).filter(f => f.filename !== 'README.md').map(async f => {
-      let content = f.content;
-      if (f.truncated) content = await (await fetch(f.raw_url)).text();
-      return { name: f.filename, content, ts: parseInt(f.filename, 10) || 0 };
-    }));
+    const items = (await Promise.all(Object.values(g.files).map(async f => {
+      const ts = parseInt(f.filename, 10) || 0;
+      if (f.filename.endsWith('.txt')) {
+        let content = f.content;
+        if (f.truncated) content = await (await fetch(f.raw_url)).text();
+        return { kind: 'text', name: f.filename, content, ts };
+      }
+      if (f.filename.endsWith('.meta.json')) {
+        try { return { kind: 'file', name: f.filename, meta: JSON.parse(f.content), ts }; } catch { return null; }
+      }
+      return null;
+    }))).filter(Boolean);
     items.sort((a, b) => b.ts - a.ts);
     const sig = items.map(i => i.name).join('|');
     if (sig !== lastSig) { lastSig = sig; render(items); }
   } catch (e) { status(e.message, 'err'); }
+}
+
+function fmtSize(n) { return n < 1024 ? n + ' Б' : n < 1048576 ? (n / 1024).toFixed(1) + ' КБ' : (n / 1048576).toFixed(1) + ' МБ'; }
+
+function fileCard(it, card) {
+  const m = it.meta;
+  const meta = document.createElement('div'); meta.className = 'meta';
+  meta.textContent = new Date(it.ts).toLocaleString('ru-RU') + ' · ' + fmtSize(m.size);
+  const name = document.createElement('div'); name.className = 'fname'; name.textContent = '📎 ' + m.name;
+  const row = document.createElement('div'); row.className = 'row';
+  const dl = document.createElement('button'); dl.textContent = 'Скачать';
+  dl.onclick = async () => {
+    dl.disabled = true; dl.textContent = 'Загрузка…';
+    try {
+      const b64 = (await (await fetch(m.url)).text()).trim();
+      const bytes = await (await fetch('data:application/octet-stream;base64,' + b64)).blob();
+      const url = URL.createObjectURL(new Blob([bytes], { type: m.type || 'application/octet-stream' }));
+      const a = document.createElement('a'); a.href = url; a.download = m.name; document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) { status('Не удалось скачать', 'err'); }
+    dl.disabled = false; dl.textContent = 'Скачать';
+  };
+  const del = document.createElement('button'); del.className = 'ghost danger'; del.textContent = 'Удалить';
+  del.onclick = async () => {
+    del.disabled = true;
+    try {
+      await gh('/gists/' + filesId, { method: 'PATCH', body: JSON.stringify({ files: { [m.blob]: null } }) });
+      await gh('/gists/' + gistId, { method: 'PATCH', body: JSON.stringify({ files: { [it.name]: null } }) });
+      card.remove(); lastSig = '';
+    } catch (e) { status(e.message, 'err'); del.disabled = false; }
+  };
+  const sp = document.createElement('span'); sp.className = 'grow';
+  row.append(dl, sp, del);
+  return [meta, name, row];
 }
 
 function render(items) {
@@ -124,6 +171,7 @@ function render(items) {
   if (!items.length) { list.innerHTML = '<p class="meta" style="text-align:center">Пока пусто</p>'; return; }
   for (const it of items) {
     const card = document.createElement('div'); card.className = 'card';
+    if (it.kind === 'file') { card.append(...fileCard(it, card)); list.append(card); continue; }
     const meta = document.createElement('div'); meta.className = 'meta';
     meta.textContent = new Date(it.ts).toLocaleString('ru-RU') + ' · ' + it.content.length + ' симв.';
     const pre = document.createElement('pre'); pre.textContent = it.content;
@@ -160,8 +208,38 @@ async function send() {
   $('send').disabled = false;
 }
 
+const toB64 = file => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result).split(',')[1] || '');
+  r.onerror = () => rej(r.error);
+  r.readAsDataURL(file);
+});
+
+async function uploadFiles(files) {
+  files = [...files];
+  if (!files.length) return;
+  $('send').disabled = true;
+  try {
+    await ensureGist();
+    let n = 0;
+    for (const file of files) {
+      n++;
+      if (!file.size) { status(file.name + ': пустой файл', 'err'); continue; }
+      if (file.size > MAX_FILE) { status(file.name + ': больше ' + fmtSize(MAX_FILE), 'err'); continue; }
+      status(`Загрузка ${n}/${files.length}: ${file.name}…`);
+      const ts = Date.now() + n, blob = ts + '.b64';
+      const r = await gh('/gists/' + filesId, { method: 'PATCH', body: JSON.stringify({ files: { [blob]: { content: await toB64(file) } } }) });
+      const meta = { name: file.name, type: file.type, size: file.size, blob, url: r.files[blob].raw_url };
+      await gh('/gists/' + gistId, { method: 'PATCH', body: JSON.stringify({ files: { [ts + '.meta.json']: { content: JSON.stringify(meta) } } }) });
+    }
+    status('Отправлено', 'ok');
+    await load();
+  } catch (e) { status(e.message, 'err'); }
+  $('send').disabled = false;
+}
+
 function logout() {
-  store.del('pb_token'); store.del('pb_gist'); token = gistId = null; lastSig = '';
+  store.del('pb_token'); store.del('pb_gist'); store.del('pb_files'); token = gistId = filesId = null; lastSig = '';
   show();
 }
 
@@ -174,6 +252,14 @@ function show() {
 $('saveToken').onclick = () => { const v = $('token').value.trim(); if (v) { token = v; store.set('pb_token', v); show(); } };
 $('logout').onclick = () => { if (confirm('Забыть токен на этом устройстве?')) logout(); };
 $('send').onclick = send;
+$('attach').onclick = () => $('file').click();
+$('file').onchange = e => { uploadFiles(e.target.files); e.target.value = ''; };
+let dragN = 0;
+addEventListener('dragenter', e => { e.preventDefault(); dragN++; document.body.classList.add('drag'); });
+addEventListener('dragleave', () => { if (--dragN <= 0) { dragN = 0; document.body.classList.remove('drag'); } });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => { e.preventDefault(); dragN = 0; document.body.classList.remove('drag'); if (token) uploadFiles(e.dataTransfer.files); });
+addEventListener('paste', e => { if (token && e.clipboardData.files.length) { e.preventDefault(); uploadFiles(e.clipboardData.files); } });
 $('text').addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') send(); });
 $('paste').onclick = async () => { try { $('text').value = await navigator.clipboard.readText(); } catch { status('Нет доступа к буферу', 'err'); } };
 setInterval(() => { if (token && !document.hidden) load(); }, 5000);

@@ -9,4 +9,6 @@
 4. Открой `https://<user>.github.io/pastebin/` и вставь токен. Gist `pastebin-data` создастся сам.
 5. На телефоне открой `https://<user>.github.io/pastebin/#token=ТОКЕН` — войдёт и сотрёт токен из адреса.
 
+Файлы (до 10 МБ): кнопка 📎, drag&drop или вставка из буфера; хранятся в base64 во втором приватном Gist `pastebin-files`.
+
 Токен хранится только в localStorage браузера; страница ходит напрямую в api.github.com.
