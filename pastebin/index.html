@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#111418">
+<title>Pastebin</title>
+<style>
+  :root { --bg:#111418; --card:#1a1f26; --fg:#e8ecf1; --muted:#8b95a3; --accent:#4f9cff; --danger:#ff6b6b; --ok:#4ade80; --border:#2a313b; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f4f6f9; --card:#fff; --fg:#1a1f26; --muted:#667085; --accent:#1f6feb; --danger:#d92d20; --ok:#16a34a; --border:#d9dee5; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:4px 0 12px; display:flex; justify-content:space-between; align-items:center; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:12px; margin-bottom:12px; }
+  textarea, input { width:100%; background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:8px; padding:10px; font:inherit; }
+  textarea { min-height:120px; resize:vertical; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:15px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 14px; font:inherit; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--muted); border:1px solid var(--border); font-weight:500; }
+  button.danger { color:var(--danger); }
+  button:disabled { opacity:.5; }
+  .row { display:flex; gap:8px; margin-top:8px; align-items:center; flex-wrap:wrap; }
+  .grow { flex:1; }
+  .meta { color:var(--muted); font-size:13px; }
+  pre { margin:8px 0 0; white-space:pre-wrap; word-break:break-word; font:14px/1.45 ui-monospace,Menlo,Consolas,monospace; max-height:240px; overflow:auto; }
+  pre.open { max-height:none; }
+  #status { font-size:13px; color:var(--muted); }
+  #status.err { color:var(--danger); }
+  #status.ok { color:var(--ok); }
+  .hidden { display:none; }
+  small a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>📋 Pastebin <button class="ghost" id="logout" title="Выйти">⚙</button></h1>
+
+  <section id="setup" class="card hidden">
+    <p><b>Первый запуск.</b> Создай токен: GitHub → Settings → Developer settings → Personal access tokens → <i>Tokens (classic)</i> → scope <code>gist</code>.
+    <small><a href="https://github.com/settings/tokens/new?scopes=gist&description=pastebin" target="_blank" rel="noopener">Открыть форму</a></small></p>
+    <input id="token" type="password" placeholder="ghp_..." autocomplete="off">
+    <div class="row"><button id="saveToken">Войти</button></div>
+    <p class="meta">Токен хранится только в localStorage этого браузера. На втором устройстве вставь тот же токен — найдёт тот же Gist сам.<br>
+    Быстрый вход: открой <code>…/#token=ТВОЙ_ТОКЕН</code> — токен сохранится, а адрес очистится.</p>
+  </section>
+
+  <section id="app" class="hidden">
+    <div class="card">
+      <textarea id="text" placeholder="Вставь текст или ссылку… (Ctrl+Enter — отправить)"></textarea>
+      <div class="row">
+        <button id="send">Отправить</button>
+        <button class="ghost" id="paste">Из буфера</button>
+        <span id="status" class="grow"></span>
+      </div>
+    </div>
+    <div id="list"></div>
+  </section>
+</main>
+
+<script>
+const API = 'https://api.github.com';
+const DESC = 'pastebin-data';
+const $ = id => document.getElementById(id);
+const store = {
+  get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+  del: k => { try { localStorage.removeItem(k); } catch {} },
+};
+let token = store.get('pb_token');
+let gistId = store.get('pb_gist');
+let lastSig = '';
+
+// быстрый вход через #token=...
+const m = location.hash.match(/token=([^&]+)/);
+if (m) { token = decodeURIComponent(m[1]); store.set('pb_token', token); history.replaceState(null, '', location.pathname + location.search); }
+
+function status(msg, cls = '') { const s = $('status'); s.textContent = msg; s.className = cls; if (msg) setTimeout(() => { if (s.textContent === msg) s.textContent = ''; }, 3000); }
+
+async function gh(path, opts = {}) {
+  const r = await fetch(API + path, {
+    ...opts,
+    headers: { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+  });
+  if (r.status === 401) { logout(); throw new Error('Токен не подходит'); }
+  if (!r.ok) throw new Error('GitHub ' + r.status);
+  return r.status === 204 ? null : r.json();
+}
+
+async function ensureGist() {
+  if (gistId) return;
+  for (let page = 1; page <= 5 && !gistId; page++) {
+    const list = await gh(`/gists?per_page=100&page=${page}`);
+    if (!list.length) break;
+    const f = list.find(g => g.description === DESC);
+    if (f) gistId = f.id;
+  }
+  if (!gistId) {
+    const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: DESC, public: false, files: { 'README.md': { content: 'pastebin storage' } } }) });
+    gistId = g.id;
+  }
+  store.set('pb_gist', gistId);
+}
+
+async function load() {
+  try {
+    await ensureGist();
+    const g = await gh('/gists/' + gistId);
+    const items = await Promise.all(Object.values(g.files).filter(f => f.filename !== 'README.md').map(async f => {
+      let content = f.content;
+      if (f.truncated) content = await (await fetch(f.raw_url)).text();
+      return { name: f.filename, content, ts: parseInt(f.filename, 10) || 0 };
+    }));
+    items.sort((a, b) => b.ts - a.ts);
+    const sig = items.map(i => i.name).join('|');
+    if (sig !== lastSig) { lastSig = sig; render(items); }
+  } catch (e) { status(e.message, 'err'); }
+}
+
+function render(items) {
+  const list = $('list');
+  list.textContent = '';
+  if (!items.length) { list.innerHTML = '<p class="meta" style="text-align:center">Пока пусто</p>'; return; }
+  for (const it of items) {
+    const card = document.createElement('div'); card.className = 'card';
+    const meta = document.createElement('div'); meta.className = 'meta';
+    meta.textContent = new Date(it.ts).toLocaleString('ru-RU') + ' · ' + it.content.length + ' симв.';
+    const pre = document.createElement('pre'); pre.textContent = it.content;
+    const row = document.createElement('div'); row.className = 'row';
+    const copy = document.createElement('button'); copy.textContent = 'Копировать';
+    copy.onclick = async () => { try { await navigator.clipboard.writeText(it.content); status('Скопировано', 'ok'); } catch { status('Не удалось скопировать', 'err'); } };
+    const exp = document.createElement('button'); exp.className = 'ghost'; exp.textContent = 'Развернуть';
+    exp.onclick = () => { pre.classList.toggle('open'); exp.textContent = pre.classList.contains('open') ? 'Свернуть' : 'Развернуть'; };
+    const del = document.createElement('button'); del.className = 'ghost danger'; del.textContent = 'Удалить';
+    del.onclick = async () => {
+      del.disabled = true;
+      try { await gh('/gists/' + gistId, { method: 'PATCH', body: JSON.stringify({ files: { [it.name]: null } }) }); card.remove(); lastSig = ''; }
+      catch (e) { status(e.message, 'err'); del.disabled = false; }
+    };
+    const sp = document.createElement('span'); sp.className = 'grow';
+    row.append(copy, exp, sp, del);
+    card.append(meta, pre, row);
+    list.append(card);
+  }
+}
+
+async function send() {
+  const text = $('text').value;
+  if (!text.trim()) return;
+  $('send').disabled = true;
+  try {
+    await ensureGist();
+    const name = Date.now() + '.txt';
+    await gh('/gists/' + gistId, { method: 'PATCH', body: JSON.stringify({ files: { [name]: { content: text } } }) });
+    $('text').value = '';
+    status('Отправлено', 'ok');
+    await load();
+  } catch (e) { status(e.message, 'err'); }
+  $('send').disabled = false;
+}
+
+function logout() {
+  store.del('pb_token'); store.del('pb_gist'); token = gistId = null; lastSig = '';
+  show();
+}
+
+function show() {
+  $('setup').classList.toggle('hidden', !!token);
+  $('app').classList.toggle('hidden', !token);
+  if (token) load();
+}
+
+$('saveToken').onclick = () => { const v = $('token').value.trim(); if (v) { token = v; store.set('pb_token', v); show(); } };
+$('logout').onclick = () => { if (confirm('Забыть токен на этом устройстве?')) logout(); };
+$('send').onclick = send;
+$('text').addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') send(); });
+$('paste').onclick = async () => { try { $('text').value = await navigator.clipboard.readText(); } catch { status('Нет доступа к буферу', 'err'); } };
+setInterval(() => { if (token && !document.hidden) load(); }, 5000);
+document.addEventListener('visibilitychange', () => { if (token && !document.hidden) load(); });
+show();
+</script>
+</body>
+</html>
