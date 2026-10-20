@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#111418">
+<script src="config.js"></script>
 <title>Pastebin</title>
 <style>
   :root { --bg:#111418; --card:#1a1f26; --fg:#e8ecf1; --muted:#8b95a3; --accent:#4f9cff; --danger:#ff6b6b; --ok:#4ade80; --border:#2a313b; }
@@ -40,12 +41,23 @@
   <h1>📋 Pastebin <button class="ghost" id="logout" title="Выйти">⚙</button></h1>
 
   <section id="setup" class="card hidden">
-    <p><b>Первый запуск.</b> Создай токен: GitHub → Settings → Developer settings → Personal access tokens → <i>Tokens (classic)</i> → scope <code>gist</code>.
-    <small><a href="https://github.com/settings/tokens/new?scopes=gist&description=pastebin" target="_blank" rel="noopener">Открыть форму</a></small></p>
-    <input id="token" type="password" placeholder="ghp_..." autocomplete="off">
-    <div class="row"><button id="saveToken">Войти</button></div>
-    <p class="meta">Токен хранится только в localStorage этого браузера. На втором устройстве вставь тот же токен — найдёт тот же Gist сам.<br>
-    Быстрый вход: открой <code>…/#token=ТВОЙ_ТОКЕН</code> — токен сохранится, а адрес очистится.</p>
+    <div id="pinForm" class="hidden">
+      <p><b>Введи PIN-код</b></p>
+      <input id="pin" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="PIN">
+      <div class="row"><button id="pinGo">Войти</button><span id="pinErr" class="grow" style="color:var(--danger)"></span></div>
+    </div>
+    <div id="sealForm" class="hidden">
+      <p><b>Первая настройка.</b> Токен GitHub шифруется PIN-кодом, дальше на устройствах нужен только PIN.
+      Токен (classic, scope <code>gist</code>): <small><a href="https://github.com/settings/tokens/new?scopes=gist&description=pastebin" target="_blank" rel="noopener">создать</a></small></p>
+      <input id="token" type="password" placeholder="ghp_..." autocomplete="off">
+      <input id="newPin" type="password" inputmode="numeric" pattern="[0-9]*" placeholder="Новый PIN" autocomplete="off" style="margin-top:8px">
+      <div class="row"><button id="sealGo">Создать config.js</button><span id="sealErr" class="grow" style="color:var(--danger)"></span></div>
+      <div id="sealOut" class="hidden">
+        <p class="meta">Сохрани этот текст как <code>config.js</code> в корне репо рядом с <code>index.html</code> и закоммить. На других устройствах после деплоя хватит PIN-кода.</p>
+        <textarea id="sealText" readonly style="min-height:90px"></textarea>
+        <div class="row"><button class="ghost" id="sealCopy">Копировать</button><button id="sealDone">Продолжить</button></div>
+      </div>
+    </div>
   </section>
 
   <section id="app" class="hidden">
@@ -79,9 +91,23 @@ let filesId = store.get('pb_files');
 const MAX_FILE = 10 * 1024 * 1024; // лимит Gist API на запрос, с запасом под base64
 let lastSig = '';
 
-// быстрый вход через #token=...
-const m = location.hash.match(/token=([^&]+)/);
-if (m) { token = decodeURIComponent(m[1]); store.set('pb_token', token); history.replaceState(null, '', location.pathname + location.search); }
+// --- PIN: токен лежит в config.js зашифрованным (PBKDF2 + AES-GCM) ---
+const ITER = 600000;
+const b64e = u => btoa(String.fromCharCode(...u));
+const b64d = t => Uint8Array.from(atob(t), c => c.charCodeAt(0));
+async function deriveKey(pin, salt, iter) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: iter, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function seal(tok, pin) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await deriveKey(pin, salt, ITER), new TextEncoder().encode(tok));
+  return { iter: ITER, salt: b64e(salt), iv: b64e(iv), ct: b64e(new Uint8Array(ct)) };
+}
+async function unseal(pin, c) {
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64d(c.iv) }, await deriveKey(pin, b64d(c.salt), c.iter), b64d(c.ct));
+  return new TextDecoder().decode(pt);
+}
 
 function status(msg, cls = '') { const s = $('status'); s.textContent = msg; s.className = cls; if (msg) setTimeout(() => { if (s.textContent === msg) s.textContent = ''; }, 3000); }
 
@@ -245,11 +271,31 @@ function logout() {
 
 function show() {
   $('setup').classList.toggle('hidden', !!token);
+  $('pinForm').classList.toggle('hidden', !window.PB_SEALED);
+  $('sealForm').classList.toggle('hidden', !!window.PB_SEALED);
   $('app').classList.toggle('hidden', !token);
   if (token) load();
 }
 
-$('saveToken').onclick = () => { const v = $('token').value.trim(); if (v) { token = v; store.set('pb_token', v); show(); } };
+$('pinGo').onclick = async () => {
+  $('pinErr').textContent = '';
+  try { token = await unseal($('pin').value.trim(), window.PB_SEALED); store.set('pb_token', token); $('pin').value = ''; show(); }
+  catch { $('pinErr').textContent = 'Неверный PIN'; }
+};
+$('pin').addEventListener('keydown', e => { if (e.key === 'Enter') $('pinGo').click(); });
+let sealedTok = null;
+$('sealGo').onclick = async () => {
+  const t = $('token').value.trim(), pin = $('newPin').value.trim();
+  if (!t || !pin) { $('sealErr').textContent = 'Нужны токен и PIN'; return; }
+  $('sealErr').textContent = 'Шифрую…';
+  try {
+    const c = await seal(t, pin);
+    $('sealText').value = 'window.PB_SEALED = ' + JSON.stringify(c) + ';\n';
+    $('sealOut').classList.remove('hidden'); $('sealErr').textContent = ''; sealedTok = t;
+  } catch (e) { $('sealErr').textContent = 'Ошибка: ' + e.message; }
+};
+$('sealCopy').onclick = async () => { try { await navigator.clipboard.writeText($('sealText').value); } catch { $('sealText').select(); } };
+$('sealDone').onclick = () => { token = sealedTok; store.set('pb_token', token); $('token').value = ''; show(); };
 $('logout').onclick = () => { if (confirm('Забыть токен на этом устройстве?')) logout(); };
 $('send').onclick = send;
 $('attach').onclick = () => $('file').click();
